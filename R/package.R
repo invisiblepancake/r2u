@@ -5,7 +5,10 @@
     if (!dir.exists(cachedir)) dir.create(cachedir, recursive=TRUE)
     path <- file.path(cachedir, paste0(pkg, "_", ver, ".tar.gz"))
     if (!file.exists(path)) {
-        repo <- paste0("https://packagemanager.posit.co/all/__linux__/", .getConfig("distribution_name"), "/latest")
+        ppmrepo <- paste0("https://packagemanager.posit.co/all/__linux__/", .getConfig("distribution_name"), "/latest")
+        #cranrepo <- "https://cloud.r-project.org"
+        #repo <- if (nzchar(Sys.getenv("CI", ""))) ppmrepo else cranrepo
+        repo <- ppmrepo
         rv <- R.version
         ## agent <- sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), rv$platform, rv$arch, rv$os))
         rversion <- .getConfig("minimum_r_version")  # e.g. "4.2.2"
@@ -64,8 +67,8 @@
 ##' The \code{buildPackage} function builds the given package. The \code{buildAll} package applies
 ##' to all elements in the supplied vector of packages. The \code{topN} and \code{topNCompiled} helpers
 ##' select \sQuote{N} among all (or all compiled) packages. The \code{nDeps} function builds packages
-##' with a given (adjusted) build-dependency count. The \code{updatedPackages} function finds a set
-##' of available packages that are not yet built.
+##' with a given (adjusted) build-dependency count. The \code{buildUpdatedPackages} function finds a 
+##' set of available packages that are not yet built.
 ##'
 ##' Note that this build process is still somewhat tailored to the build setup use by the author and
 ##' is not (yet ?) meant to be universally transferable. It should be with a little care and possible
@@ -87,16 +90,19 @@
 ##' default \sQuote{FALSE}
 ##' @param dryrun logical Optional value to skip actual package build step, default is \sQuote{FALSE}
 ##' @param compile logical Optional value to ensure compilation from source, default is \sQuote{FALSE}
+##' @param bioc logical Optional switch for BioConductor build
 ##' @return Nothing as the function is invoked for the side effect of building binary packages
+##' @seealso \code{buildUpdatedPackages}
 ##' @author Dirk Eddelbuettel
 buildPackage <- function(pkg, tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb=FALSE,
                          suffix=".1", debver="1.", plusdfsg=FALSE, dryrun=FALSE, compile=FALSE) {
     db <- .pkgenv[["db"]]
     stopifnot("db must be data.frame" = inherits(db, "data.frame"))
     .checkTarget(tgt)
-    .loadBuilds()                       # need to this again once target is reflected
+    .loadBuilds(tgt)        		# local or remote
     .addBuildDepends(tgt)               # add distro-release versioned depends
     .addBlacklist(tgt)                  # add distro-release blacklist
+    .addBlacklist(.platform())          # add arch blacklist (for arm64)
     .addRuntimedepends(tgt)             # add distro-release run-time depends
     if (.isBasePackage(pkg)) return(invisible())
     ind <- match(pkg, db[,Package])
@@ -107,6 +113,7 @@ buildPackage <- function(pkg, tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb
         return(invisible())
     }
     tgtdist <- gsub("\\.", "", .pkgenv[["distribution"]])   ## NB this will not work for Debian testing
+
     builds <- .pkgenv[["builds"]][tgt == tgtdist,]
 
     repo <- ap[aind, ap]
@@ -154,25 +161,26 @@ buildPackage <- function(pkg, tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb
     }
     pkgname <- paste0("r-", tolower(effrepo), "-", tolower(pkg)) 			# aka r-cran-namehere
     cand <- paste0(pkgname, "_", ver)
-    if (is.finite(match(cand, builds[, pkgver])) && isFALSE(force) && suffix==".1") {
+    if (!is.null(builds) && is.finite(match(cand, builds[, pkgver])) && isFALSE(force) && suffix==".1") {
         if (verbose) cat(blue(sprintf("%-22s %-11s %-11s", pkg, aver, ver))) 		# start console log with pkg
         if (verbose) cat(green("[already built - skipping]\n"))
         return(invisible())
     }
 
     ## side-effect of the Breaks for R 4.3.1 and the newly built packages
-    if (  (pkg == "magick"     && ver == "2.7.4")
-        ||(pkg == "MALDIquant" && ver == "1.22.1")
-        ||(pkg == "ps"         && ver == "1.7.5")
-        ||(pkg == "ragg"       && ver == "1.2.5")
-        ||(pkg == "svglite"    && ver == "2.1.1")
-        ||(pkg == "tibble"     && ver == "3.2.1")) {
-        if (verbose) {
-            cat(blue(sprintf("%-22s %-11s %-11s", pkg, ver, aver)))
-            cat(red("[silly breaks side effect, skipping]\n"))
-        }
-        return(invisible())
-    }
+    ## no longer needed as of R 4.4.2 in Feb 2025
+    #if (  (pkg == "magick"     && ver == "2.7.4")
+    #    ||(pkg == "MALDIquant" && ver == "1.22.1")
+    #    ||(pkg == "ps"         && ver == "1.7.5")
+    #    ||(pkg == "ragg"       && ver == "1.2.5")
+    #    ||(pkg == "svglite"    && ver == "2.1.1")
+    #    ||(pkg == "tibble"     && ver == "3.2.1")) {
+    #    if (verbose) {
+    #        cat(blue(sprintf("%-22s %-11s %-11s", pkg, ver, aver)))
+    #        cat(red("[silly breaks side effect, skipping]\n"))
+    #    }
+    #    return(invisible())
+    #}
 
     ## so we're building one
     cat(blue(sprintf("%-22s %-11s %-11s", pkg, ver, aver))) 		# start console log with pkg
@@ -196,12 +204,15 @@ buildPackage <- function(pkg, tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb
             }
 
     build_dir <- .getConfig("build_directory")
-    if (!dir.exists(build_dir)) stop("Build directory '", build_dir, "' does not exist")
+    if (!dir.exists(build_dir)) {
+        stop("Build directory '", build_dir, "' does not exist")
+        dir.create(build_dir, recursive=TRUE)
+    }
     build_dir <- file.path(build_dir, .getConfig("distribution_name"))
     if (!dir.exists(build_dir)) dir.create(build_dir, recursive=TRUE)
     setwd(build_dir)
 
-    if (!dir.exists(pkg)) dir.create(pkg) 				# namehere inside build
+    if (!dir.exists(pkg)) dir.create(pkg) 				# name here inside build
     setwd(pkg)
 
     instdir <- file.path("debian", pkgname, "usr", "lib", "R", "site-library") 	# unpackaged binary
@@ -235,16 +246,28 @@ buildPackage <- function(pkg, tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb
     deps <- if (pkg %in% names(.getConfig("builddeps"))) .getConfig("builddeps")[pkg] else ""
     added_deps <- if (repo == "Bioc" || isTRUE(force)) paste(.filterAndMapBuildDepends(pkg, ap), collapse=" ") else ""
     depstr <- if (nchar(deps) + nchar(added_deps) > 0) paste0("-a '", deps, " ", added_deps, "' ") else " "
-    cmd <- paste0("docker run --rm -ti ",
-                  "-v ", getwd(), ":/mnt ",
-                  "-w /mnt/build/", distname, "/", pkg, " ",
-                  container, " debBuild.sh ",
-                  if (isTRUE(xvfb) || grepl("(tcltk|tkrplot)", depstr)) "-x " else " ",
-                  if (repo == "Bioc") "-b " else " ",
-                  if (repo == "Bioc" || isTRUE(force)) "-s " else " ",
-                  "-d ", distname, " ",
-                  depstr,
-                  pkg)
+    if (.in.docker()) {
+        chkdir <- file.path(.getConfig("build_directory"), .getConfig("distribution_name"), pkg)
+        if (!dir.exists(chkdir)) dir.create(chkdir, recursive=TRUE) 				
+        cmd <- paste0("debBuild.sh ",
+                      if (isTRUE(xvfb) || grepl("(tcltk|tkrplot)", depstr)) "-x " else " ",
+                      if (repo == "Bioc") "-b " else " ",
+                      if (repo == "Bioc" || isTRUE(force)) "-s " else " ",
+                      "-d ", distname, " ",
+                      depstr,
+                      pkg)
+    } else {
+        cmd <- paste0("docker run --rm -ti ",
+                      "-v ", getwd(), ":/mnt ",
+                      "-w /mnt/build/", distname, "/", pkg, " ",
+                      container, " debBuild.sh -r /mnt ",
+                      if (isTRUE(xvfb) || grepl("(tcltk|tkrplot)", depstr)) "-x " else " ",
+                      if (repo == "Bioc") "-b " else " ",
+                      if (repo == "Bioc" || isTRUE(force)) "-s " else " ",
+                      "-d ", distname, " ",
+                      depstr,
+                      pkg)
+    }
     if (debug) print(cmd)
     if (dryrun) {
         cat(blue("[dry-run so not building]\n"))
@@ -283,7 +306,7 @@ buildAll <- function(pkg, tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb=FAL
 #' @param date Date Relevant date for cranlog download stats
 #' @param from integer Optional applied as offset to \code{npkg} to shift the selection
 topN <- function(npkg, date=Sys.Date() - 1, from=1L) {
-    D <- data.table::fread(.getCachedDLLogsFile(date))
+    D <- .local_fread(.getCachedDLLogsFile(date))
     D <- D[, .N, keyby=package][order(N,decreasing=TRUE)]
     D[seq(from, min(from+npkg-1L, nrow(D))),package]
 }
@@ -291,7 +314,7 @@ topN <- function(npkg, date=Sys.Date() - 1, from=1L) {
 #' @rdname buildPackage
 topNCompiled <- function(npkg, date=Sys.Date() - 1, from=1L) {
     db <- .pkgenv[["db"]]
-    D <- data.table::fread(.getCachedDLLogsFile(date))
+    D <- .local_fread(.getCachedDLLogsFile(date))
     DN <- D[, .N, keyby=package][order(N,decreasing=TRUE)]
     setnames(DN, "package", "Package")
     CP <- db[NeedsCompilation != "no", Package]
@@ -306,14 +329,14 @@ topNCompiled <- function(npkg, date=Sys.Date() - 1, from=1L) {
     pkg
 }
 
-#' @rdname buildPackage
-nDeps <- function(ndeps) {
+#  no longer in rd ' @rdname buildPackage
+.nDeps <- function(ndeps) {
     db <- .pkgenv[["db"]]
     db[adjdep == ndeps, Package]
 }
 
-#' @rdname buildPackage
-nDepsRange <- function(ndepslo, ndepshi) {
+#  no longer in rd ' @rdname buildPackage
+.nDepsRange <- function(ndepslo, ndepshi) {
     db <- .pkgenv[["db"]]
     db[adjdep >= ndepslo & adjdep <= ndepshi, Package]
 }
@@ -370,7 +393,144 @@ nDepsRange <- function(ndepslo, ndepshi) {
 }
 
 #' @rdname buildPackage
-buildUpdatedPackages <- function(tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb=FALSE, bioc=FALSE) {
+buildUpdatedPackages <- function(tgt, debug=FALSE, verbose=FALSE, force=FALSE, xvfb=FALSE, bioc=FALSE, dryrun=FALSE) {
+    .addBlacklist(tgt)             		# add distro blacklist
     pkgs <- if (bioc) .getUpdatedBiocPackages(tgt) else .getUpdatedPackages(tgt)
-    buildAll(pkgs, tgt, debug=debug, verbose=verbose, force=force, xvfb=xvfb)
+    pkgs <- pkgs[order(tolower(pkgs))]
+    if (dryrun) print(pkgs) else buildAll(pkgs, tgt, debug=debug, verbose=verbose, force=force, xvfb=xvfb)
+}
+
+# no longer in rd @rdname buildPackage
+.toTargets <- function(pkgs, filename="") {
+    ## this corresponds to the `jq` based snippet to turn a vector of packages into a JSON expression
+    ## which is suitable as input to a GitHub Actions 'matrix' to control parallel work
+    ## ie
+    ## > vec
+    ## [1] "microbenchmark" "parallelly"     "bitops"         "matrixStats"
+    ## > toTargets(vec)
+    ## {"target":["microbenchmark","parallelly","bitops","matrixStats"]}
+    ## >
+    cat('{"target":[', sep="", file=filename)
+    lastpkgs <- tail(pkgs,1)
+    for (p in pkgs) {
+        cat('"', p, '"', sep="", file=filename, append=TRUE)
+        if (p != lastpkgs) cat(',', sep="", file=filename, append=TRUE)
+    }
+    cat("]}\n", file=filename, append=TRUE)
+}
+
+# To not require R.utils for reading a compressed gz
+## .local_fread <- function(url) {
+##     tf <- tempfile(fileext="csv.gz")
+##     download.file(url, tf, quiet=TRUE)
+##     res <- data.table::fread(tf)
+##     unlink(tf)
+##     res
+## }
+.local_fread <- function(fname) {
+    cmd <- paste("zcat", fname)
+    res <- data.table::fread(cmd=cmd)
+    res
+}
+
+## ## Helper function for GitHub Actions builds
+## # ' @ rdname buildPackage
+## getBuildTargets <- function(filename, N=200, verbose=TRUE) {
+##     if (requireNamespace("RcppAPT", quietly=TRUE)) {
+##         ## get packages already Built
+##         B <- data.table(RcppAPT::getPackages("^r-(bioc|cran)-"), key="Package")
+##         ##B[, tgt := gsub(".*-\\d+.ca(\\d{4}).\\d+.*", "\\1", Version), by=Package]
+##         B[, r2u := grepl("ca2404", Version), by=Package]
+##         B[, vv := gsub("^\\d:", "", Version), by=Package]
+##         B[, vvv := gsub("-\\d$", "", vv), by=Package]
+##         B[, vvvv := gsub("-\\d\\.ca\\d{4}\\.\\d$", "", vvv), by=Package]
+##         B[, pkgver := paste(Package, vvvv, sep="_")]
+##         B[, let(vv = NULL, vvv = NULL, vvvv = NULL) ]
+
+##         ## get target package, here top N compiled
+##         topN <- unique(topNCompiled(N, Sys.Date()-2))
+##         db <- .pkgenv[["db"]]
+##         TP <- data.table(Package=topN)
+##         P <- db[TP, on="Package"]
+##         P <- P[!duplicated(Package),]
+##         P[Package %in% c("nlme", "foreign"), Version := gsub("-", ".", Version)]
+##         P[, pkgver := paste0("r-cran-", tolower(Package), "_", Version)]
+
+##         P <- P[, isin := is.finite(match(pkgver, B[r2u==TRUE, pkgver])), by=pkgver][isin==FALSE,]
+##         P <- P[order(adjdep,ndep,Package), c(1:2, 70:73)]
+
+##         if (verbose) print(P)
+
+##         P <- head(P, min(20, nrow(P)))
+
+##         if (verbose) {
+##             print(P)
+##             toTargets(P[,Package])
+##         }
+
+##         toTargets(P[, Package], file=filename)
+##     } else {
+##         cat("# needs RcppAPT\n", file=filename)
+##     }
+## }
+
+## Helper function for GitHub Actions builds and specific to arm64
+## N is now obsolete
+#  no longer in rd @rdname buildPackage
+.getBuildTargets <- function(filename="", N=200, nbatch=40, platform=.platform(), verbose=TRUE) {
+    .addBlacklist(.pkgenv[["distribution"]])            # add distro-release blacklist
+    .addBlacklist(platform)             		# add arch blacklist (for arm64)
+
+    ## get packages already Built
+    #cmd <- "links -dump"
+    #url <- "https://r2u.stat.illinois.edu/ubuntu/pool/dists/noble/main/"
+    #awk <- r"(awk '/r-.*_ar/ { print $1 "," $2 " "$3 "," $4 }')"  # not arm64.deb as cols get chopped
+    #cmd <- paste(cmd, url, "|", awk)
+    B <- .allBuilds("noble", platform)
+    restr <- paste0(platform, ".deb$")
+    B <- B[grepl(restr, file), ]
+
+    ## already in B[, version := gsub("^.*_(.*)_(amd64|all|arch64)\\.deb$", "\\1", file), by=file]
+    B[, r2u := grepl("ca2404", version), by=file]  # needed ?
+    B[, ver := gsub("(.*)-(\\d\\.ca\\d{4}\\.\\d)$", "\\1", version)] # upstream
+    B[, pkgver := gsub("(.*)-(\\d\\.ca\\d{4}\\.\\d)_(.*)$", "\\1", file)]
+    if (verbose) print(B)
+
+    db <- .pkgenv[["db"]]
+    ## take one: get target packages, here top N compiled
+    ##   topN <- unique(topNCompiled(N, Sys.Date()-2))
+    ##   TP <- data.table(Package=topN)
+    ## take two: get (all) target packages from AP
+    ## NB: this is the only one that reflects BioC as we 'stack' ap with BioC but not db
+    ap <- .pkgenv[["ap"]]
+    TP <- data.table(Package=ap[ap == "CRAN" & NeedsCompilation=="yes", Package])
+    ## for either take one or take two: merge with db 
+    TP <- data.table(Package=db[NeedsCompilation=="yes", unique(Package)])
+    P <- db[TP, on="Package"]
+    ## take three: use db directly
+    #P <- db[NeedsCompilation=="yes", ]
+    P <- P[!duplicated(Package),]
+    P[Package %in% c("nlme", "foreign"), Version := gsub("-", ".", Version)]
+    P[, pkgver := paste0("r-cran-", tolower(Package), "_", Version)]
+
+    P <- P[, skip := is.finite(match(Package, .pkgenv[["blacklist"]])), by=Package] 
+    P <- P[, win := (OS_type == "windows")]
+    P <- P[, isin := is.finite(match(pkgver, B[r2u==TRUE, pkgver])), by=pkgver]
+    P <- P[isin==FALSE & skip==FALSE & is.na(win),]
+
+    ap <- .pkgenv[["ap"]]
+    newP <- ap[, .(Package, Version)][P,on="Package"]
+    newP <- newP[ Version==i.Version, ]
+    newP[, i.Version:=NULL ]
+
+    P <- newP[order(adjdep,ndep,Package), c(1:2, 70:75)]
+    if (verbose) print(P)
+    P <- head(P, min(nbatch, nrow(P)))
+    if (verbose) {
+        print(P)
+        .toTargets(P[,Package])
+    }
+
+    .toTargets(P[, Package], filename) 	   # actual effect of writing out
+    invisible(P)                           # available for debug print if needed
 }

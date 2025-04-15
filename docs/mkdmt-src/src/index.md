@@ -26,7 +26,8 @@ description: Easy, fast, reliable -- pick all three!
 - **Complete coverage** with (currently, using 22.04) ~ 24491 CRAN packages (and 435 from
   BioConductor) using **current versions**: We use R 4.4.*, and BioConductor 3.20.
 
-- Complete support for **Ubuntu 20.04 ("focal")**,  **22.04 ("jammy")** and **24.04 ("noble")**.
+- Complete support for **Ubuntu 20.04 ("focal")**, **22.04 ("jammy")** and **24.04 ("noble")** on
+  amd64, as well as (initial) **24.04 ("noble")** support on arm64.
 
 - Optional (but recommended) [bspm](https://cloud.r-project.org/package=bspm) use
   **automagically connects R functions like `install.packages()` to `apt`** for access to binaries 
@@ -35,7 +36,7 @@ description: Easy, fast, reliable -- pick all three!
 - **Docker containers** `rocker/r2u` from the [Rocker Project](https://rocker-project.org/) for both 
   'focal', 'jammy' and 'noble'.
   
-- **GitHub Actions support** to set up on Ubuntu 22.04 "jammy" or via container.
+- **GitHub Actions support** to set up on Ubuntu 'latest' or via container.
 
 ### Brief Demo
 
@@ -55,14 +56,15 @@ We generally support amd64 (_i.e._ standard 64-bit Intel/AMD cpus, sometimes als
 the current Ubuntu LTS release and its predecessor release (more on this
 [here](https://eddelbuettel.github.io/r2u/vignettes/FAQ/#what-about-other-architectures-besides-x86_64)).
 We use 'r-release' just like CRAN. So currently the 'focal' 20.04 LTS, 'jammy' 22.04 LTS and 'noble'
-24.04 releases are fully supported.
+24.04 releases are fully supported.  We are now also starting to support arm64 on 'noble' 24.04 taking
+advantage of arm64-based runners at GitHub Actions. 
 
-Support for other cpu architectures is certainly possible but somewhat unlikely due to a lack of
+Support for additional cpu architectures is certainly possible but somewhat unlikely due to a lack of
 (additional hardware) resources and time. Support for other distributions is possible but unlikely
 right now (due to a lack of resources and time). P3M/PPM/RSPM now appears to also support Debian which
 could be added at some later point.
 
-Current versions are based on R 4.4.0, and BioConductor release 3.20 packages are provided when
+Current versions are based on R 4.4.*, and BioConductor release 3.20 packages are provided when
 required by CRAN packages.  Binaries are generally R 4.4.* based. Some older packages released when
 we used R 4.2.* or 4.3.* may have been built with R 4.2.* or R 4.3.*, they will still work the same
 with R 4.4.* as R is generally forward-compatible.
@@ -79,21 +81,21 @@ a very skewed distribution.) We iterated, and fairly soon arrived of full covera
 
 So we now cover
 
-- *all CRAN packages* (modulo at best handful of blacklisted ones) including all packages needing
+- *all CRAN packages* (modulo at best a handful of blacklisted ones) including all packages needing
   compilation
 - all BioConductor packages implied by these plus a 'healthy subset' of the highest
     [scoring](https://bioconductor.org/packages/stats/bioc/bioc_pkg_scores.tab) BioConductor
     packages (also covering _e.g._ all BioConductor packages in the Debian and Ubuntu distributions)
 
-This currently results in 24572, 24491, 22140 binary packages from CRAN in "focal", "jammy", and
-"noble", respectively, and 427, 435, and 450 BioConductor packages, respectively, from the 3.20 
+This currently results in 24797, 24717, 22376 binary packages from CRAN in "focal", "jammy", and
+"noble", respectively, and 429, 437, and 451 BioConductor packages, respectively, from the 3.20 
 releases. (See this
 [FAQ](https://eddelbuettel.github.io/r2u/vignettes/FAQ/#why-does-it-have-more-packages-than-cran)
 about why this number is higher than CRAN, and variable between releases.)
 
-The sole exception are two packages we cannot build (as we do not have the required commercial
-software it accessess) plus less than a handful of 'odd builds' that fail and
-are skipped.
+The sole exception are packages we cannot build (as we do not have the required commercial software
+it accessess, or do not have the required more recent toolchain component) plus a handful or so of
+'odd builds' that fail and are skipped.
 
 ### What is it Based On?
 
@@ -120,13 +122,14 @@ You can use `lsb_release -cs` to generate your release name: "focal", "jammy", a
 supported and you could swap "focal" or "noble" in below (or use one of the scripts).
 
 Here, we show the setup step by step for 'jammy' aka Ubuntu 22.04 (as it is still the most-widely
-used distribution per our logs). You should run all these commands as `root` to carefully review
-each one. If you prefer the newer Ubuntu 24.04, please see the
+used distribution per our logs, though we may update this to 24.04 soon). You should run all these
+commands as `root` to carefully review each one. If you prefer the newer Ubuntu 24.04, please see
+the
 [`add_cranapt_noble.sh`](https://github.com/eddelbuettel/r2u/blob/master/inst/scripts/add_cranapt_noble.sh)
 script which also avoids the now-deprecated `apt-key` command).
 
 
-** Step 1: Update apt, install tools, fetch key**
+**Step 1: Update apt, install tools, fetch key**
 
 First add the repository key so that `apt` knows it (this is optional but recommended)
 
@@ -137,7 +140,7 @@ wget -q -O- https://eddelbuettel.github.io/r2u/assets/dirk_eddelbuettel_key.asc 
     | tee -a /etc/apt/trusted.gpg.d/cranapt_key.asc
 ```
 
-** Step 2: Add the apt repo**
+**Step 2: Add the apt repo**
 
 Second, add the repository to the `apt` registry. We recommend the well-connected main mirror
 provide at University of Illinois:
@@ -148,7 +151,9 @@ echo "deb [arch=amd64] https://r2u.stat.illinois.edu/ubuntu jammy main" \
 apt update -qq
 ```
 
-** Step 3: Ensure you have current R binaries (optional)**
+Use `arch=arm64` for arm64 support (currently only available for noble).
+
+**Step 3: Ensure you have current R binaries (optional)**
 
 Third, and optionally, if you do not yet have the current R version, run these two lines (or
 use the [standard CRAN repo setup](https://cloud.r-project.org/bin/linux/ubuntu/))
@@ -165,7 +170,10 @@ DEBIAN_FRONTEND=noninteractive apt install --yes --no-install-recommends \
     r-base-core
 ```
 
-** Step 4: Use pinning for the r2u repo (optional)**
+Use `arch=arm64` for arm64 support (currently only available for noble).
+
+
+**Step 4: Use pinning for the r2u repo (optional)**
 
 Fourth, add repository 'pinning' as `apt` might get confused by some older
 packages (in the Ubuntu distro) which accidentally appear with a higher
@@ -183,7 +191,7 @@ After that the package are known (under their `r-cran-*` and `r-bioc-*`
 names).  You can install them on the command-line using `apt` and `apt-get`,
 via `aptitude` as well as other front-ends.
 
-** Step 5: Use `bspm` (optional)**
+**Step 5: Use `bspm` (optional)**
 
 Fifth, and also optional, install and enable the [bspm](https://cloud.r-project.org/package=bspm)
 package so that the r2u (or CRANapt) as well as other R packages (available as `r-*.deb` binaries)
@@ -224,6 +232,8 @@ give the r2u / cranapt repo a weight of 700 which is higher than the package def
 
 ### Docker
 
+**Core r2u Containers**
+
 There are also Docker containers for Ubuntu 20.04 'focal', 22.04 'jammy', and 24.04 'noble',
 respectively.  Initially published as
 [eddelbuettel/r2u](https://hub.docker.com/repository/docker/eddelbuettel/r2u), these are now also
@@ -238,6 +248,19 @@ Note that with some builds of Docker (and possibly related to Ubuntu hosts) you 
 the `--security-opt seccomp=unconfined` option to your Docker invocation to take advantage of bspm
 and the full system integration inside the container.
 This is also documented in the [FAQ](https://eddelbuettel.github.io/r2u/vignettes/FAQ/).
+
+**Contributed Containers**
+
+We are now starting to see derived containers:
+
+- [BioConductor](https://www.bioconductor.org/) has an (alpha release) project
+[bioc2u](https://github.com/Bioconductor/bioc2u) providing (internal ?) BioConductor builds
+- [Jeffrey Girard](https://github.com/jmgirard) created
+[rstudio2u](https://github.com/jmgirard/rstudio2u) which adds RStudio to the
+base layer provided by r2u.
+
+It is encouraging to see such specialisations based off r2u itself.
+
 
 ### GitHub Actions
 
@@ -270,7 +293,7 @@ harder.
 
 ### Try It
 
-** Via codespaces **
+**Via codespaces**
 
 See the vignette [Codespaces](https://eddelbuettel.github.io/r2u/vignettes/Codespaces/) about how to
 launch a 'Codespace' directly in your browser, launched from the gitrepo within minutes.
@@ -280,7 +303,7 @@ codespace.
 
 The vignette has more details.
 
-** Via gitpod.io **
+**Via gitpod.io**
 
 Use this link below (after possibly signing up for
 [gitpod.io](https://gitpod.io/) first)
@@ -299,12 +322,12 @@ only (free) [GitHub](https://github.com) and [GitPod](https://gitpod.io) account
 
 ### Usage Statistics
 
-Usage is vibrant.  As of January 2025, over 300,000 packages are shipped per week, with a total of
-now over thirty three million packages shipped.  Early September 2023 also had the most recent and
+Usage is vibrant.  As of March 2025, over 400,000 packages are shipped per week, with a total of
+now over thirty seven million packages shipped.  Early September 2023 also had the most recent and
 dramatic spike of _over three million packages in two days_.  The following chart gives a summary of
 cumulative and average weekly downloads (the latter one on a log scale) as of August.
 
-![](https://eddelbuettel.github.io/images/2025-01-07/r2u_aggregated_and_weekly_2025-01-07.png)
+![](https://eddelbuettel.github.io/images/2025-03-11/r2u_aggregated_and_weekly_2025-03-11.png)
 
 ### Support
 
